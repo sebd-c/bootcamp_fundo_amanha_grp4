@@ -28,9 +28,7 @@ Para gerar o relatório e os gráficos, rode:
 `-i` e `-o` são obrigatórios. Escreve `<REPORT_FOLDER_OUTPUT_PATH>/eda_summary.md`, a pasta `figures/` e as tabelas `per_stock_stats.csv` e `tracking_baselines.csv`. Parâmetros opcionais:
 
 - `-sd <SPLIT_DATE>`: data de corte treino/teste (padrão: os primeiros 70% dos pregões são treino);
-- `-rt price|total`: retornos só de preço (padrão; mesma base do `^OEX`, que não inclui dividendos) ou totais (`Adj Close`, com dividendos);
-- `-ot <OUTLIER_THRESHOLD>`: retorno diário marcado como extremo (padrão: 0.15);
-- `-hl <TICKER> <TICKER> ...`: até 4 ações destacadas no gráfico de performance normalizada.
+- `-rt price|total`: retornos só de preço (padrão; mesma base do `^OEX`, que não inclui dividendos) ou totais (`Adj Close`, com dividendos).
 
 Exemplo, analisando só 2025 em pastas separadas:
 
