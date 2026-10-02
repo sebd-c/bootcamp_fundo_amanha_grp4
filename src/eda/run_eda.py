@@ -6,13 +6,17 @@ Lê a pasta criada pelo data_mining.py e escreve em <output_folder>:
 Seções (checklist do Guia de Dados & EDA):
   1. Qualidade dos dados   2. O índice   3. Retornos das ações   4. Correlação com o índice
   5. Correlação entre ações   6. Volatilidade e crises   7. Baseline de tracking
+  8. Comparação com o Ibovespa
 
 Uso:
-  python3 -m src.eda.run_eda -i data -o reports
+  python3 -m src.eda.run_eda -i data -o reports                       # todo o período baixado
+  python3 -m src.eda.run_eda -i data -o reports/2025 -y 2025          # só um ano
+  python3 -m src.eda.run_eda -i data -o reports/covid -s 2020-01-01 -e 2021-01-01
   python3 -m src.eda.run_eda -i data -o reports/total -sd 2023-01-01 -rt total
 """
 #################################################################################################
 # imports
+import sys
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from pathlib import Path
 
@@ -31,6 +35,7 @@ from src._execution_formatting import print_execution_parameters
 # constantes
 
 INDEX = "^OEX"
+IBOV = "^BVSP"
 DAYS = 252  # pregões por ano, para anualizar
 OUTLIER = 0.15  # retorno diário acima de ±15% é extremo (valor do guia)
 HIGHLIGHTS = ["AAPL", "MSFT", "NVDA", "TSLA"]  # destaques do gráfico de base 100 (os do guia)
@@ -76,6 +81,12 @@ def mark_events(ax: plt.Axes, dates: pd.DatetimeIndex) -> None:
             # número do evento no topo do gráfico (y = 1 = topo do eixo)
             ax.annotate(str(i), (day, 1), xycoords=("data", "axes fraction"), xytext=(2, -10),
                         textcoords="offset points", fontsize=8, color=GRAY)
+
+
+def cut(df: pd.DataFrame, start_date: str | None, end_date: str | None) -> pd.DataFrame:
+    """Recorta as linhas entre start_date e end_date (fim exclusivo, como no data_mining)."""
+    df = df.loc[start_date:]  # None = desde o início
+    return df[df.index < end_date] if end_date else df
 
 
 def ols_weights(x: pd.DataFrame, y: pd.Series) -> pd.Series:
@@ -124,8 +135,8 @@ def data_quality(prices: pd.DataFrame, returns: pd.DataFrame) -> str:
         "índice não aparecem. Os backtests tendem a ser otimistas.",
         "Ações com dados faltantes:", missing.to_frame("faltante").to_markdown(floatfmt=".1%"),
         f"**Outliers:** {len(outliers)} retornos diários acima de ±{OUTLIER:.0%} em "
-        f"{outliers.index.get_level_values(1).nunique()} ações. Batem com eventos reais (resultados, março "
-        "de 2020), então foram mantidos. Os 10 maiores:",
+        f"{outliers.index.get_level_values(1).nunique()} ações. Batem com eventos reais (resultados, crises), "
+        "então foram mantidos. Os 10 maiores:",
         top_moves.to_frame("retorno").to_markdown(floatfmt=".1%"),
     ])
 
@@ -439,11 +450,53 @@ def tracking_baseline(returns: pd.DataFrame, split: pd.Timestamp, fig_dir: Path)
     ])
     return text, table
 
+
+def ibovespa_comparison(returns: pd.DataFrame, ibov: pd.Series, fig_dir: Path) -> str:
+    """Seção 8: o S&P 100 comparado com o Ibovespa (referência para o investidor brasileiro).
+
+    Extrai: retorno e volatilidade anuais, Sharpe e drawdown máximo dos dois índices, e a
+    correlação entre eles com retornos diários e semanais.
+    Gráfico: os dois em base 100, cada um no calendário da sua bolsa.
+    Mostra: o quanto os dois mercados andam juntos. Não é comparação exata: moedas diferentes
+    (US$ x R$), o ^OEX é só preço e o Ibovespa reinveste dividendos.
+    """
+    both = {"S&P 100 (US$)": returns[INDEX], "Ibovespa (R$)": ibov}
+
+    def summary(r: pd.Series) -> pd.Series:
+        level = (1 + r).cumprod()
+        return pd.Series({"retorno anual (composto)": level.iloc[-1] ** (DAYS / len(r)) - 1,
+                          "volatilidade anual": r.std() * np.sqrt(DAYS),
+                          "sharpe (rf = 0)": r.mean() / r.std() * np.sqrt(DAYS),
+                          "drawdown máximo": (level / level.cummax() - 1).min()})
+
+    table = pd.DataFrame({name: summary(r) for name, r in both.items()})
+    daily = pd.concat(both, axis=1, join="inner")  # só os dias em que as duas bolsas abriram
+    # semanal: as bolsas fecham em horários diferentes, o que reduz a correlação diária
+    weekly = pd.concat(both, axis=1).fillna(0).add(1).resample("W-FRI").prod() - 1
+
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    for (name, r), color in zip(both.items(), [NAVY, AQUA]):
+        ax.plot(100 * (1 + r).cumprod(), color=color, label=name)
+    mark_events(ax, returns.index)
+    ax.set_title("S&P 100 x Ibovespa (base 100, cada um na sua moeda)")
+    ax.legend(loc="best")
+    fig_ibov = save(fig, fig_dir, "11_sp100_vs_ibovespa")
+
+    return "\n\n".join([
+        "## 8. Comparação com o Ibovespa (^BVSP)",
+        "Referência, não alvo do tracking: moedas diferentes (sem conversão pelo câmbio), calendários "
+        "diferentes (B3 x NYSE) e o Ibovespa inclui dividendos, enquanto o ^OEX não.",
+        table.to_markdown(floatfmt=".3f"), fig_ibov,
+        f"- Correlação diária (dias em comum): **{daily.corr().iloc[0, 1]:.2f}**; semanal: "
+        f"**{weekly.corr().iloc[0, 1]:.2f}**.",
+    ])
+
 #################################################################################################
 # execução completa
 
 
-def run_eda(input_folder: Path, output_folder: Path, split_date: str | None, return_type: str) -> None:
+def run_eda(input_folder: Path, output_folder: Path, start_date: str | None, end_date: str | None,
+            split_date: str | None, return_type: str) -> None:
     """Carrega os dados, roda as 7 seções em ordem e salva o relatório, os gráficos e as tabelas."""
     fig_dir = output_folder / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -454,6 +507,9 @@ def run_eda(input_folder: Path, output_folder: Path, split_date: str | None, ret
     returns_file = "returns.parquet" if return_type == "price" else "returns_total.parquet"
     returns = pd.read_parquet(input_folder / "processed" / returns_file)  # retornos limpos, com ^OEX
     constituents = pd.read_csv(input_folder / "raw" / "constituents.csv", index_col="yahoo_ticker")
+    ibov = pd.read_parquet(input_folder / "processed" / "returns_ibovespa.parquet")[IBOV]
+    # período pedido no terminal (sem -s/-e, usa tudo o que foi baixado)
+    prices, returns, ibov = (cut(df, start_date, end_date) for df in (prices, returns, ibov))
     # sem data de corte, os primeiros 70% dos pregões são treino
     split = pd.Timestamp(split_date) if split_date else returns.index[int(len(returns) * 0.7)]
 
@@ -467,6 +523,8 @@ def run_eda(input_folder: Path, output_folder: Path, split_date: str | None, ret
     te_text, te_table = tracking_baseline(returns, split, fig_dir)
     report = [
         "# S&P 100 index tracking: análise exploratória",
+        f"**Período:** {returns.index[0].date()} a {returns.index[-1].date()}. "
+        f"Gerado com `python3 -m src.eda.run_eda {' '.join(sys.argv[1:])}`.",
         f"Fontes: Yahoo Finance e Wikipedia. {price_note}",
         data_quality(prices, returns),
         index_analysis(prices, returns, fig_dir),
@@ -475,6 +533,7 @@ def run_eda(input_folder: Path, output_folder: Path, split_date: str | None, ret
         stock_correlation(returns, corr_table.index, fig_dir),  # usa o ranking de correlação da seção 4
         volatility(returns, fig_dir),
         te_text,
+        ibovespa_comparison(returns, ibov, fig_dir),
     ]
     (output_folder / "eda_summary.md").write_text("\n\n".join(report))
     corr_table.join(stock_table).to_csv(output_folder / "per_stock_stats.csv")  # uma linha por ação
@@ -501,6 +560,22 @@ def get_args_dict() -> dict:
                         required=True,
                         help='defines path to report output folder')
 
+    parser.add_argument('-s', '--start_date',
+                        dest='start_date',
+                        default=None,
+                        help='defines first date of the analysis, YYYY-MM-DD (default: start of the data)')
+
+    parser.add_argument('-e', '--end_date',
+                        dest='end_date',
+                        default=None,
+                        help='defines end date of the analysis, YYYY-MM-DD, exclusive (default: end of the data)')
+
+    parser.add_argument('-y', '--year',
+                        dest='year',
+                        type=int,
+                        default=None,
+                        help='analyses a single full year, e.g. 2025 (overrides -s/-e)')
+
     parser.add_argument('-sd', '--split_date',
                         dest='split_date',
                         default=None,
@@ -512,7 +587,14 @@ def get_args_dict() -> dict:
                         default='price',
                         help='defines "price" (Close, like ^OEX) or "total" (Adj Close, with dividends) returns')
 
-    return vars(parser.parse_args())
+    args_dict = vars(parser.parse_args())
+
+    # -y vira o período de 1º de janeiro até 1º de janeiro do ano seguinte
+    if args_dict['year']:
+        args_dict['start_date'] = f"{args_dict['year']}-01-01"
+        args_dict['end_date'] = f"{args_dict['year'] + 1}-01-01"
+
+    return args_dict
 
 #################################################################################################
 # função principal
@@ -524,6 +606,8 @@ def main():
     print_execution_parameters(params_dict=args_dict)
     run_eda(input_folder=args_dict['input_folder'],
             output_folder=args_dict['output_folder'],
+            start_date=args_dict['start_date'],
+            end_date=args_dict['end_date'],
             split_date=args_dict['split_date'],
             return_type=args_dict['return_type'])
 

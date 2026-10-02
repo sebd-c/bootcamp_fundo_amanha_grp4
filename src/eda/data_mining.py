@@ -7,6 +7,8 @@ Expected ‘outputs’ in <output_folder>:
   raw/volume.parquet               volume negociado
   processed/returns.parquet        retornos diários de preço (mesma base do ^OEX)
   processed/returns_total.parquet  retornos diários totais (com dividendos)
+  raw/ibovespa.parquet             fechamento e volume do Ibovespa (^BVSP), no calendário da B3
+  processed/returns_ibovespa.parquet  retornos diários do Ibovespa
 
 Use:
   python3 -m src.eda.data_mining -o data                          # período do briefing: 2018-01-01 a 2025-05-01
@@ -27,6 +29,7 @@ from src._execution_formatting import print_execution_parameters
 # constants
 
 INDEX_TICKER = "^OEX"
+IBOV_TICKER = "^BVSP"
 WIKI_URL = "https://en.wikipedia.org/wiki/S%26P_100"
 
 #################################################################################################
@@ -77,6 +80,12 @@ def mine_data(start_date: str, end_date: str, output_folder: Path, min_coverage:
     # auto_adjust=False para ter "Close" (só splits, como o ^OEX) e "Adj Close" (com dividendos)
     data = yf.download(tickers + [INDEX_TICKER], start=start_date, end=end_date, auto_adjust=False, progress=False)
 
+    # Ibovespa à parte: tem o calendário da B3, e no mesmo DataFrame viraria mais uma "ação" para o EDA
+    print("downloading Ibovespa...")
+    ibov = yf.download(IBOV_TICKER, start=start_date, end=end_date, progress=False, multi_level_index=False)
+    ibov = ibov[["Close", "Volume"]]  # o Ibovespa já é de retorno total (reinveste dividendos)
+    ibov_returns = ibov["Close"].pct_change().dropna().to_frame(IBOV_TICKER)
+
     print("getting market caps...")
     constituents = get_weights(constituents, data["Close"].ffill().iloc[-1])
 
@@ -88,8 +97,10 @@ def mine_data(start_date: str, end_date: str, output_folder: Path, min_coverage:
     data["Close"].to_parquet(output_folder / "raw" / "prices.parquet")
     data["Adj Close"].to_parquet(output_folder / "raw" / "prices_total_return.parquet")
     data["Volume"].to_parquet(output_folder / "raw" / "volume.parquet")
+    ibov.to_parquet(output_folder / "raw" / "ibovespa.parquet")
     returns.to_parquet(output_folder / "processed" / "returns.parquet")
     total_returns.to_parquet(output_folder / "processed" / "returns_total.parquet")
+    ibov_returns.to_parquet(output_folder / "processed" / "returns_ibovespa.parquet")
     print(f"saved {returns.shape[0]} days x {returns.shape[1]} tickers to {output_folder}")
 
 #################################################################################################
